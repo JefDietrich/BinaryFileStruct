@@ -1,0 +1,3 @@
+# BinaryFileStruct
+
+README
