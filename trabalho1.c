@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdbool.h>
 
+char MARCACAO_DELETADO = '#';
+
 typedef struct
 {
     char codCliente[12];
@@ -31,66 +33,178 @@ void inserirHeader(FILE* arquivoResultado) {
 /*   100         #          304       [ registro ] */
 /* tamanho end.      proximo deletado [ registro ] */
 void inserirRegistro(LOCACAO_VEICULO veiculoAInserir, FILE* arquivoResultado) {
-    char registro[100];
+    char registro[130];
     sprintf(registro, "%s|%s|%s|%s|%s|", veiculoAInserir.codCliente,
             veiculoAInserir.codVeiculo,
             veiculoAInserir.nomeCliente,
             veiculoAInserir.nomeVeiculo,
             veiculoAInserir.dia);
 
-    int tamRegistro = strlen(registro), header;
+    int tamRegistro = strlen(registro), header, posicaoRegistro, tamRegistroDeletado;
     bool espacoEncontrado = false;
 
     rewind(arquivoResultado);    
     fread(&header, sizeof(int), 1, arquivoResultado);
 
     if(header != -1) {        
-        int tamRegistroDeletado;
         // Até achar um espaço ou o header for igual a -1
-        while(!espacoEncontrado && header != -1) {
-            fseek(arquivoResultado, sizeof(char) * header, SEEK_SET);                                
-            fread(&tamRegistroDeletado, sizeof(int), 1, arquivoResultado);            
-                                
+        while(!espacoEncontrado && header != -1) {            
+            fseek(arquivoResultado, header, SEEK_SET);
+
+            // Guarda posição do registro para inserir depois caso o tamanho seja ideal   
+            posicaoRegistro = ftell(arquivoResultado);
+
             // Verifica se o tamanho do registro deletado consegue armazenar o registro novo
-            if (tamRegistroDeletado >= tamRegistro) {                
-                espacoEncontrado = true;                
-            } else {
-                // Anda um para pular o # e lê o próximo registro deletado
-                fseek(arquivoResultado, sizeof(char), SEEK_CUR);
-                fread(&header, sizeof(int), 1, arquivoResultado);
-            }
+            fread(&tamRegistroDeletado, sizeof(int), 1, arquivoResultado);                                                    
+            if (tamRegistroDeletado >= tamRegistro) {   
+                espacoEncontrado = true;                            
+            } 
+
+            // Anda um para pular o # e lê o próximo registro deletado
+            fseek(arquivoResultado, sizeof(char), SEEK_CUR);
+            fread(&header, sizeof(int), 1, arquivoResultado);
         }     
     }  
     
     if(!espacoEncontrado) {
         // Se não encontrou um espaço, insere no fim do arquivo
-        fseek(arquivoResultado, 0, SEEK_END);
+        fseek(arquivoResultado, 0, SEEK_END);                 
         fwrite(&tamRegistro, sizeof(int), 1, arquivoResultado);    
-    }   
+        fwrite(registro, sizeof(char), tamRegistro, arquivoResultado);
+    } else {
+        fseek(arquivoResultado, posicaoRegistro + sizeof(int), SEEK_SET);        
+        // fwrite(&tamRegistro, sizeof(int), 1, arquivoResultado);    
+        fwrite(registro, sizeof(char), tamRegistro, arquivoResultado);
 
-    fwrite(registro, sizeof(char), tamRegistro, arquivoResultado);
-    
-    if(espacoEncontrado) {    
         // Atualiza o header com a posição próximo registro deletado
         rewind(arquivoResultado);
         fwrite(&header, sizeof(int), 1, arquivoResultado);
-    }
+    } 
 }
 
 void removerRegistro(REMOCAO_VEICULO veiculo_remover , FILE* arquivoResultado) {
-    // Guarda o valor do header
-    // Procura o registro pela chave
-    // Seta o # depois do tamanho disponivel
-    // Seta o valor atual do header
-    // Atualiza o header com a posição que o registro deletado ficou
+    int header, contadorDeCaninho, i, tamanhoRegistro, posicaoRegistro;    
+    bool registroEncontrado = false;
+    char letraLida, codigoLido[20];
+
+    rewind(arquivoResultado);    
+    
+    // Guarda o header porque usaremos lá para frente
+    fread(&header, sizeof(int), 1, arquivoResultado);
+
+    // Montamos o código do registro que queremos deletar. Ex: 111111111AAA1389
+    char codigoRegistroDeletar[20];
+    strcpy(codigoRegistroDeletar, veiculo_remover.codCliente);
+    strcat(codigoRegistroDeletar, veiculo_remover.codVeiculo);
+
+    while(fread(&tamanhoRegistro, sizeof(int), 1, arquivoResultado) != 0) {  
+        posicaoRegistro = ftell(arquivoResultado); // armazena posicao do registro     
+        contadorDeCaninho = 0; // contador de | 
+        i = 0; // contador de quantos caracteres foram lidos
+
+        fread(&letraLida, sizeof(char), 1, arquivoResultado);
+
+        if(letraLida == MARCACAO_DELETADO) {
+            // Se a letra lida for # quer dizer que o registro já foi deletado
+            fseek(arquivoResultado, sizeof(char) * (tamanhoRegistro - 1), SEEK_CUR);                         
+            continue;
+        }
+
+        // O while irá pegar o código cliente e o código veiculo. Ex de arquivo: 111111111|AAA1389|.....
+        // Vai lendo um caracter por caracter e irá criar a string '111111111AAA1389'
+        // e quando ler dois '|' paramos porque já temos nosso código que será deletado
+        while(contadorDeCaninho < 2) {                                            
+            if(letraLida == '|') {
+                contadorDeCaninho++;
+            } else {
+                codigoLido[i] = letraLida;
+                i++;
+            }           
+            fread(&letraLida, sizeof(char), 1, arquivoResultado); 
+        }
+        codigoLido[i] = '\0';    
+        
+        // Comparamos se esse registro que queremos deletar
+        if(strcmp(codigoLido, codigoRegistroDeletar) == 0) {
+            registroEncontrado = true;
+            break;
+        } else {
+            // Vai para o próximo registro: avança o tamanhoRegistro - (caracteres lidos + 2 caracteres '|')           
+            fseek(arquivoResultado, sizeof(char) * (tamanhoRegistro - i - 3), SEEK_CUR);                      
+        }            
+    }
+
+    if(registroEncontrado) {
+        // Vai para o posição do começo do registro    
+        //  aqui
+        //   |
+        //   10 111111 111|AAA1389|
+        fseek(arquivoResultado, posicaoRegistro, SEEK_SET);        
+        fwrite(&MARCACAO_DELETADO, sizeof(char), 1, arquivoResultado);
+        fwrite(&header, sizeof(int), 1, arquivoResultado);
+
+        // Vai para o começo do arquivo atualizar o header
+        rewind(arquivoResultado);
+        posicaoRegistro -= sizeof(int);
+        fwrite(&posicaoRegistro, sizeof(int), 1, arquivoResultado);
+    } else {
+        printf("Registro não existe no arquivo\n");
+    }
 }
 
-void compactarArquivo(FILE* arquivoResultado){
-    // Cria arquivo temporário
-    // Percorre o arquivo original
-    // Percorre os registro e vai adicionando no arquivo temporário (não add os deletados)
-    // Deleta arquivo original
-    // Renomeia arquivo temporário
+void compactarArquivo() {
+    
+    FILE* resultado = fopen("resultado.bin", "rb");
+    FILE* temp = fopen("temp.bin", "w+b");
+
+    char codigoLido[130];
+    char letraLida;
+    int i = 0, tamanho, contadorDeCaninho = 0;
+
+    // Inseir -1 no header do arquivo temporário
+    inserirHeader(temp);
+    fread(&tamanho, sizeof(int), 1, resultado);
+    
+    while(fread(&tamanho, sizeof(int), 1, resultado) != 0) {
+        contadorDeCaninho = 0; // contador de | 
+        i = 0; // contador de quantos caracteres foram lidos
+
+        fread(&letraLida, sizeof(char), 1, resultado);
+
+        if(letraLida == MARCACAO_DELETADO){
+            // Se a letra lida for # quer dizer que o registro já foi deletado então pulamos ele
+            fseek(resultado, sizeof(char) * (tamanho - 1), SEEK_CUR);                         
+            continue;
+        }
+        
+        // Aqui recuperamos o registro e escrevemos no novo arquivo com o tamanho já atualizado (eliminamos a fragmentação interna)
+        while(true) {                                            
+            if(letraLida == '|') {
+                contadorDeCaninho++;
+            } 
+            codigoLido[i] = letraLida;
+            i++;                   
+
+             if(contadorDeCaninho == 5) {
+                break;
+            }
+
+            fread(&letraLida, sizeof(char), 1, resultado);            
+        }
+        codigoLido[i] = '\0';
+
+        fwrite(&i, sizeof(int), 1, temp);
+        fwrite(&codigoLido, sizeof(char), i, temp);   
+
+        // Pula para o próximo registro
+        fseek(resultado, sizeof(char) * (tamanho - i), SEEK_CUR);           
+    } 
+
+    fclose(temp);
+    fclose(resultado);
+
+    remove("resultado.bin");
+    rename("temp.bin", "resultado.bin");    
 }
 
 FILE* verificaArquivo(char* arquivo) {
@@ -119,16 +233,18 @@ int main()
 
     FILE *resultado = fopen("resultado.bin", "a+b");
     inserirHeader(resultado);
+    fclose(resultado);
 
     int opcao, i = 0;
 
     do {
-        printf("+------------------------------------------+");
-        printf("\nSelecione uma das opções abaixo:\n");
+        printf("\n+------------------------------------------+");
+        printf("\nSelecione uma das opções abaixo:\n\n");
         printf("(1) Inserir um registro.\n");
         printf("(2) Remover um registro.\n");
         printf("(3) Compactar o arquivo.\n");
-        printf("(4) Sair do programa.\n");
+        printf("(0) Sair do programa.\n\n");
+        printf("\n+------------------------------------------+\n");
         printf("Opção: ");
         scanf("%d", &opcao);
 
@@ -138,14 +254,16 @@ int main()
                 while (1) {
                     printf("\nDigite '0' para sair.");      
                     printf("\nInforme um número de 1 a 8: ");      
-                    scanf("%d", &i);            
+                    scanf("%d", &i);
 
                     if (i == 0) {
                         break;
                     }else if (i < 1 || i > 8) {
                         printf("Opção inválida!");
                     }
-                    inserirRegistro(locacaoVeiculos[i], resultado);
+                    resultado = fopen("resultado.bin", "r+b");
+                    inserirRegistro(locacaoVeiculos[i-1], resultado);
+                    fclose(resultado);
                 }
                 break;
             case 2:
@@ -159,20 +277,20 @@ int main()
                     }else if (i < 1 || i > 4) {
                         printf("Opção inválida!");
                     }
-                    removerRegistro(remocaoVeiculo[i], resultado);
+                    resultado = fopen("resultado.bin", "r+b");
+                    removerRegistro(remocaoVeiculo[i-1], resultado);
+                    fclose(resultado);
                 }
                 break;        
-            case 3:
-                compactarArquivo(resultado);
-                printf("Arquivo compactado com sucesso!");
+            case 3:                
+                compactarArquivo();
+                printf("\nArquivo compactado com sucesso!\n");
                 break;            
-            case 4:
-                printf("\nSaindo do programa...\n");
+            case 0:
+                printf("\nSaindo do programa...\n\n");
                 break;            
             default:
                 break;
         }
-    } while (opcao != 4);
-
-    fclose(resultado);
+    } while (opcao != 0);    
 }
